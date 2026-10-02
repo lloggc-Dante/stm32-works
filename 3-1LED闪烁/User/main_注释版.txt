@@ -1,0 +1,205 @@
+/*==============================================================================
+ * 3-1 LED闪烁 —— 逐行注释版（参考用，不要加进 Keil 工程）
+ * 对应文件：User\main.c（当前是 Delay 闪烁版）
+ * 芯片：STM32F103C8T6，主频 72MHz
+ *
+ * 【说明】本文件只是给你看的文本，不是源码。Keil 只编译工程 Groups 里列出的
+ *  .c 文件，这个 .txt 不会被编译，也不会和 main.c 冲突。
+ *
+ * 【外设编程三步曲，顺序不能反】
+ *   ① 开时钟：给外设"通电"，否则后面写它的寄存器全部无效（而且不报错！）
+ *   ② 配引脚：用结构体填一张"配置单"，再交给 GPIO_Init 写进寄存器
+ *   ③ 用引脚：置位/复位/翻转，输出高或低电平
+ *============================================================================*/
+
+/*------------------------------------------------------------------------------
+ * #include "stm32f10x.h"
+ *   芯片总头文件，做三件事：
+ *     1) 定义所有外设寄存器的地址（GPIOA、RCC、SysTick……）
+ *     2) 声明所有标准库函数（GPIO_Init、RCC_APB2PeriphClockCmd……）
+ *     3) 定义各种宏和枚举（ENABLE、GPIO_Pin_0、GPIO_Mode_Out_PP、Bit_RESET……）
+ *   没有它，下面这些名字编译器一个都不认识。
+ *
+ * #include "Delay.h"
+ *   这是"你自己写的"模块头文件（在工程的 System 组里），只做一件事：
+ *   声明三个延时函数，让 main.c 知道它们存在、参数是什么类型。
+ *         void Delay_us(uint32_t us);
+ *         void Delay_ms(uint32_t ms);
+ *         void Delay_s (uint32_t s);
+ *   真正的函数体在 Delay.c 里。
+ *
+ *   ★ 尖括号 < > 和双引号 " " 的区别：
+ *       #include <stdio.h>    → 只去"系统/编译器"的包含路径里找
+ *       #include "Delay.h"   → 先找当前源文件所在目录，再找 Keil 里配置的
+ *                              Include Paths（本工程是 .\Library;.\Start;.\User）
+ *   这就是为什么要在 Options for Target → C/C++ → Include Paths 里加上
+ *   .\System，否则会报 "cannot open source input file Delay.h"。
+ *---------------------------------------------------------------------------*/
+#include "stm32f10x.h"                  // Device header
+#include "Delay.h"
+
+int main(void)                          // 主函数：程序从这里开始执行
+{
+	/*--------------------------------------------------------------------------
+	 * 第①步：打开 GPIOA 的时钟
+	 *--------------------------------------------------------------------------
+	 * 函数原型（Library\stm32f10x_rcc.h 第 693 行）：
+	 *     void RCC_APB2PeriphClockCmd(uint32_t RCC_APB2Periph, FunctionalState NewState);
+	 *
+	 *   参数1 RCC_APB2Periph：开哪个外设的时钟。GPIOA 挂在 APB2 总线上，
+	 *          所以填 RCC_APB2Periph_GPIOA（本质是位掩码 0x00000004）。
+	 *   参数2 NewState：ENABLE = 开，DISABLE = 关。
+	 *          （ENABLE/DISABLE 见 Start\stm32f10x.h 第 521 行：
+	 *            typedef enum {DISABLE = 0, ENABLE = !DISABLE} FunctionalState;）
+	 *
+	 * 它内部实际做的事：把 RCC 的 APB2ENR 寄存器里"GPIOA 那一位"置 1，
+	 * 等于给 GPIOA 这个车间合上电闸。
+	 *
+	 * 为什么必须第一步做：芯片复位后为了省电，各外设时钟默认关闭。时钟没开
+	 * 就去写 GPIO 的寄存器，写操作会被丢弃、读回来还是旧值——现象就是
+	 * "编译没错、程序也在跑，但灯毫无反应"。
+	 *
+	 * 同族函数（按外设挂在哪条总线选）：
+	 *     RCC_APB2PeriphClockCmd();  // APB2：GPIOA~E、AFIO、USART1、SPI1、ADC1、TIM1
+	 *     RCC_APB1PeriphClockCmd();  // APB1：TIM2~7、USART2~5、I2C1/2、SPI2、PWR、BKP
+	 *     RCC_AHBPeriphClockCmd();   // AHB ：DMA1/2、SRAM、FLITF、CRC
+	 *------------------------------------------------------------------------*/
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+
+	/*--------------------------------------------------------------------------
+	 * 第②步：准备一张"配置单"（一个结构体变量）
+	 *--------------------------------------------------------------------------
+	 * GPIO_InitTypeDef 是 Library\stm32f10x_gpio.h 第 91~101 行定义的结构体类型，
+	 * 就三个成员：
+	 *     uint16_t          GPIO_Pin;    // 要配置哪些引脚
+	 *     GPIOSpeed_TypeDef GPIO_Speed;  // 输出速度档位
+	 *     GPIOMode_TypeDef  GPIO_Mode;   // 工作模式
+	 *
+	 * 注意：这句只是"在内存里声明一个变量"，还没碰任何硬件。
+	 * 下面三句是往这张单子上填内容，最后一句（GPIO_Init）才真正写进硬件。
+	 *------------------------------------------------------------------------*/
+	GPIO_InitTypeDef GPIO_InitStructure;
+
+	/* 工作模式 = 通用推挽输出（GPIO_Mode_Out_PP，定义值 0x10）
+	 *   推挽：芯片能主动把引脚拉到 3.3V（高）或 0V（低），驱动能力强，点灯用它。
+	 *   对比 GPIO_Mode_Out_OD 开漏输出：只能主动拉低，要高电平得靠外部上拉电阻，
+	 *        常用于 I2C 这种"多设备共用一根线"的场合。
+	 *   其它常用模式：GPIO_Mode_IPU 上拉输入、GPIO_Mode_IPD 下拉输入、
+	 *         GPIO_Mode_IN_FLOATING 浮空输入、GPIO_Mode_AIN 模拟输入（ADC 用）。
+	 */
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+
+	/* 要配置的引脚 = 第 0 号引脚，也就是 PA0
+	 *   GPIO_Pin_0 就是 ((uint16_t)0x0001)，一个"位掩码"：
+	 *   每一位代表一个引脚，第 0 位对应 Pin_0。
+	 *   想同时配置 PA0 和 PA1，写成 GPIO_Pin_0 | GPIO_Pin_1 即可。
+	 */
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
+
+	/* 输出速度 = 50MHz（最高档，可选 10MHz / 2MHz / 50MHz）
+	 *   它不是"引脚每秒翻转 5000 万次"，而是输出驱动电路的带宽档位：
+	 *   档位越高，电平翻转越快、边沿越陡，同时功耗和干扰也越大。
+	 *   点灯是慢速场合，三档都能用，习惯上写 50MHz。
+	 */
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+
+	/*--------------------------------------------------------------------------
+	 * 第③步：把配置单真正写进寄存器
+	 *--------------------------------------------------------------------------
+	 * 函数原型：void GPIO_Init(GPIO_TypeDef* GPIOx, GPIO_InitTypeDef* GPIO_InitStruct);
+	 *
+	 *   参数1 GPIOA：操作哪组端口。GPIOA 是库里的宏，展开就是
+	 *          ((GPIO_TypeDef *) 0x40010800)，即 GPIOA 寄存器组的首地址。
+	 *   参数2 &GPIO_InitStructure：注意这个 &，"取地址"。
+	 *          函数要的是结构体指针，传地址比复制整个结构体更省内存、更高效。
+	 *
+	 * 它干的事：按结构体内容修改 GPIOA 的 CRL 寄存器（Pin0~Pin7 用 CRL，
+	 * Pin8~Pin15 用 CRH），把 PA0 对应的 4 个配置位设成"推挽输出 + 50MHz"。
+	 * 执行完这一句，PA0 才真正变成输出引脚（此前是复位默认的浮空输入）。
+	 *------------------------------------------------------------------------*/
+	GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+	/*--------------------------------------------------------------------------
+	 * 第④步：死循环里反复"亮 → 等 → 灭 → 等"，这就是闪烁
+	 *--------------------------------------------------------------------------
+	 * 单片机的 main 不允许执行完就退出：退出后 CPU 会跑到不确定的地方，
+	 * 现象是"程序像死机"。所以标准写法是 while(1) 永久循环。
+	 *------------------------------------------------------------------------*/
+	while(1)
+	{
+		/*----------------------------------------------------------------------
+		 * GPIO_WriteBit —— 一条语句搞定"输出高"或"输出低"
+		 *----------------------------------------------------------------------
+		 * 函数原型（stm32f10x_gpio.h 第 359 行）：
+		 *   void GPIO_WriteBit(GPIO_TypeDef* GPIOx, uint16_t GPIO_Pin, BitAction BitVal);
+		 *
+		 *   参数1 GPIOA     ：操作哪组端口
+		 *   参数2 GPIO_Pin_0：操作哪个/哪些引脚（位掩码）
+		 *   参数3 BitVal    ：Bit_RESET = 输出低电平；Bit_SET = 输出高电平
+		 *          （BitAction 是枚举：typedef enum {Bit_RESET = 0, Bit_SET} BitAction;）
+		 *
+		 * 它内部就是一句 if-else：
+		 *     if (BitVal != Bit_RESET) GPIOx->BSRR = GPIO_Pin;   // 置位 → 输出高
+		 *     else                     GPIOx->BRR  = GPIO_Pin;   // 复位 → 输出低
+		 *
+		 * BSRR / BRR 这两个寄存器的特点是"写 1 的位才生效，写 0 的位不动"，
+		 * 所以只影响你指定的引脚，绝不会干扰 GPIOA 上的其它引脚。
+		 *
+		 * ★ 同族的三个写法，作用一样，任选：
+		 *     GPIO_ResetBits(GPIOA, GPIO_Pin_0);                      // 输出低
+		 *     GPIO_SetBits  (GPIOA, GPIO_Pin_0);                      // 输出高
+		 *     GPIO_WriteBit (GPIOA, GPIO_Pin_0, Bit_RESET / Bit_SET); // 二合一
+		 *   本行是"输出低电平"。开发板的 LED 一般是低电平点亮（正极接 3.3V、
+		 *   负极接 GPIO），所以 Bit_RESET = 点亮，Bit_SET = 熄灭。
+		 *--------------------------------------------------------------------*/
+		GPIO_WriteBit(GPIOA, GPIO_Pin_0, Bit_RESET);   // PA0 输出低 → LED 亮
+
+		/*----------------------------------------------------------------------
+		 * Delay_ms —— 自己写的毫秒级延时（阻塞式等待）
+		 *----------------------------------------------------------------------
+		 * 声明在 System\Delay.h，实现在 System\Delay.c：
+		 *     void Delay_ms(uint32_t xms)          // 范围 0 ~ 4294967295
+		 *     {
+		 *         while(xms--) { Delay_us(1000); }  // 1ms = 1000us，循环凑出来
+		 *     }
+		 *
+		 * 它自己不会"看表"，真正计时的是 Delay_us 里的 SysTick：
+		 *     SysTick->LOAD = 72 * xus;               // 重装值：72 拍 = 1us
+		 *     SysTick->VAL  = 0x00;                   // 清空当前计数值
+		 *     SysTick->CTRL = 0x00000005;             // bit0=1 启动，bit2=1 用 HCLK
+		 *     while(!(SysTick->CTRL & 0x00010000));   // 轮询 bit16：数到 0 就退出
+		 *     SysTick->CTRL = 0x00000004;             // 停掉定时器
+		 *
+		 *   为什么是 72：SysTick 的时钟源选了 HCLK = 72MHz，也就是每秒 7200 万拍，
+		 *   所以 1us 需要 72 拍 → 想延时 xus 就装 72*xus。
+		 *   为什么上限 233015：SysTick 是内核里的 24 位递减计数器，最大 0xFFFFFF
+		 *   (16777215)，除以 72 约等于 233015us。超了就会溢出、延时不准。
+		 *
+		 * ★ 这种延时的缺点：CPU 在 while 里空转干等（叫"阻塞式"），这段时间
+		 *   什么都做不了。以后学定时器中断，就能做到"到点自动提醒"而不占 CPU。
+		 *--------------------------------------------------------------------*/
+		Delay_ms(500);                                 // 亮 500ms
+
+		GPIO_WriteBit(GPIOA, GPIO_Pin_0, Bit_SET);     // PA0 输出高 → LED 灭
+		Delay_ms(500);                                 // 灭 500ms
+	}
+}
+
+/*==============================================================================
+ * 附一：本次用到的库函数速查（不用背，会查就行）
+ *----------------------------------------------------------------------------
+ * RCC_APB2PeriphClockCmd(外设宏, ENABLE/DISABLE)  stm32f10x_rcc.c   开/关 APB2 外设时钟
+ * GPIO_Init(端口, &配置结构体)                     stm32f10x_gpio.c  按配置单设置引脚模式
+ * GPIO_WriteBit(端口, 引脚掩码, Bit_SET/Bit_RESET) stm32f10x_gpio.c  输出高 / 低电平
+ * GPIO_ResetBits(端口, 引脚掩码)                   stm32f10x_gpio.c  输出低电平
+ * GPIO_SetBits(端口, 引脚掩码)                     stm32f10x_gpio.c  输出高电平
+ * Delay_ms(毫秒) / Delay_us(微秒) / Delay_s(秒)    System\Delay.c    自己写的阻塞式延时
+ *
+ * 附二：查函数最快的办法
+ *   在 Keil 里把光标放在函数名上按 F12（Go to Definition），会跳到它的定义；
+ *   看 .h 文件里函数上方的注释，以及函数的参数类型说明。
+ *
+ * 附三：本工程的三条 Include Paths
+ *   .\Library;.\Start;.\User;.\System
+ *   前两个放官方库，User 放你自己的 main.c，System 放你自己写的模块（Delay）。
+ *============================================================================*/

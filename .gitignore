@@ -1,0 +1,34 @@
+# ===== Keil MDK 编译输出目录 =====
+Objects/
+Listings/
+DebugConfig/
+RTE/
+
+# ===== 编译中间文件与固件产物 =====
+*.o
+*.d
+*.crf
+*.axf
+*.hex
+*.bin
+*.elf
+*.lst
+*.map
+*.lnp
+*.dep
+*.iex
+*.sct
+*.bak
+*.build_log.htm
+*.htm.orig
+
+# ===== Keil 个人窗口布局（临时文件） =====
+*.uvguix.*
+*.uvgui.*
+
+# ===== 编辑器 / 系统杂项 =====
+*.tmp
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
